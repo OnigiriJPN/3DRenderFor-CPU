@@ -1,1 +1,350 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>CPU 3D Renderer - Robust Edition</title>
+    <style>
+        body {
+            margin: 0;
+            background: #0b0b0b;
+            color: #fff;
+            font-family: monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            overflow: hidden;
+            touch-action: none;
+        }
+        h1 { font-size: 14px; margin-bottom: 8px; color: #888; }
+        
+        canvas {
+            border: 1px solid #333;
+            background: #000;
+            cursor: grab;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+        }
+        canvas:active { cursor: grabbing; }
 
+        .dashboard {
+            margin-top: 12px;
+            display: inline-flex;
+            gap: 20px;
+            font-size: 14px;
+            background: #111;
+            padding: 8px 14px;
+            border-radius: 6px;
+            border: 1px solid #333;
+            align-items: center;
+        }
+        .status-item { display: flex; align-items: center; gap: 8px; }
+        .status-dot {
+            width: 10px; height: 10px; border-radius: 50%;
+            transition: background-color 0.3s ease, box-shadow 0.3s ease;
+        }
+        .status-dot.green { background-color: #2ecc71; box-shadow: 0 0 6px #2ecc71; }
+        .status-dot.yellow { background-color: #f1c40f; box-shadow: 0 0 6px #f1c40f; }
+        .status-dot.red { background-color: #e74c3c; box-shadow: 0 0 8px #e74c3c; }
+
+        /* エラー表示用オーバーレイ */
+        #errorOverlay {
+            display: none;
+            position: absolute;
+            top: 10px;
+            background: rgba(231, 76, 60, 0.9);
+            color: white;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="errorOverlay">System Error Detected</div>
+    <h1>CPU 3D SOFTWARE RENDERER (ROBUST)</h1>
+    <canvas id="renderCanvas" width="640" height="480"></canvas>
+
+    <div class="dashboard">
+        <div class="status-item">
+            <div id="responseDot" class="status-dot green"></div>
+            <span id="fpsNum">60 FPS</span>
+        </div>
+        <div class="status-item">
+            <div id="memoryDot" class="status-dot green"></div>
+            <span id="memoryNum">0%</span>
+        </div>
+    </div>
+
+    <script>
+        // --- 1. キャンバス＆コンテキストの取得エラー処理 ---
+        const canvas = document.getElementById('renderCanvas');
+        if (!canvas) {
+            console.error("Critical: Canvas element not found.");
+            alert("致命的なエラー: キャンバス要素が見つかりません。");
+            throw new Error("Canvas element missing");
+        }
+
+        const ctx = canvas.getContext('2d', { willReadFrequently: false });
+        if (!ctx) {
+            console.error("Critical: Failed to get 2D context.");
+            document.getElementById('errorOverlay').style.display = 'block';
+            document.getElementById('errorOverlay').innerText = "2D Context Not Supported";
+            throw new Error("2D Context initialization failed");
+        }
+
+        const width = canvas.width;
+        const height = canvas.height;
+        
+        let imageData, data;
+        try {
+            imageData = ctx.createImageData(width, height);
+            data = imageData.data;
+        } catch (e) {
+            console.error("Error creating ImageData:", e);
+            data = new Uint8ClampedArray(width * height * 4); // フォールバック
+        }
+
+        // --- カメラ・操作用パラメータ ---
+        let cameraZ = 4.0;
+        let rotX = 0.5;
+        let rotY = 0.5;
+        let isDragging = false;
+        let lastMouseX = 0;
+        let lastMouseY = 0;
+        let initialPinchDistance = null;
+
+        // --- 3D 頂点データ ---
+        const vertices = [
+            [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
+            [-1, -1,  1], [1, -1,  1], [1, 1,  1], [-1, 1,  1]
+        ];
+        const edges = [
+            [0,1], [1,2], [2,3], [3,0],
+            [4,5], [5,6], [6,7], [7,4],
+            [0,4], [1,5], [2,6], [3,7]
+        ];
+
+        // --- 2. イベントリスナーのエラー・例外ガード ---
+        try {
+            canvas.addEventListener('mousedown', (e) => {
+                isDragging = true;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+            });
+
+            window.addEventListener('mouseup', () => { isDragging = false; });
+            window.addEventListener('mousemove', (e) => {
+                if (!isDragging) return;
+                let deltaX = e.clientX - lastMouseX;
+                let deltaY = e.clientY - lastMouseY;
+                rotY += deltaX * 0.01;
+                rotX += deltaY * 0.01;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+            });
+
+            canvas.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                cameraZ += e.deltaY * 0.005;
+                cameraZ = Math.max(1.5, Math.min(10.0, cameraZ));
+            }, { passive: false });
+
+            // タッチイベント (ゼロ除算やundefined対策)
+            canvas.addEventListener('touchstart', (e) => {
+                if (!e.touches) return;
+                if (e.touches.length === 1) {
+                    isDragging = true;
+                    lastMouseX = e.touches[0].clientX;
+                    lastMouseY = e.touches[0].clientY;
+                } else if (e.touches.length >= 2) {
+                    isDragging = false;
+                    initialPinchDistance = getPinchDistance(e.touches);
+                }
+            });
+
+            canvas.addEventListener('touchmove', (e) => {
+                if (!e.touches) return;
+                if (isDragging && e.touches.length === 1) {
+                    let deltaX = e.touches[0].clientX - lastMouseX;
+                    let deltaY = e.touches[0].clientY - lastMouseY;
+                    rotY += deltaX * 0.01;
+                    rotX += deltaY * 0.01;
+                    lastMouseX = e.touches[0].clientX;
+                    lastMouseY = e.touches[0].clientY;
+                } else if (e.touches.length >= 2 && initialPinchDistance !== null) {
+                    let currentDistance = getPinchDistance(e.touches);
+                    if (currentDistance > 0) {
+                        let diff = initialPinchDistance - currentDistance;
+                        cameraZ += diff * 0.01;
+                        cameraZ = Math.max(1.5, Math.min(10.0, cameraZ));
+                        initialPinchDistance = currentDistance;
+                    }
+                }
+            }, { passive: false });
+
+            window.addEventListener('touchend', () => {
+                isDragging = false;
+                initialPinchDistance = null;
+            });
+        } catch (err) {
+            console.warn("Non-fatal: Error binding input events:", err);
+        }
+
+        function getPinchDistance(touches) {
+            try {
+                if (!touches || touches.length < 2) return 0;
+                let dx = touches[0].clientX - touches[1].clientX;
+                let dy = touches[0].clientY - touches[1].clientY;
+                return Math.sqrt(dx * dx + dy * dy);
+            } catch (e) {
+                return 0; // 異常値時はピンチ距離0を返してクラッシュ回避
+            }
+        }
+
+        // --- 安全なライン描画 (画面外クリッピング完備) ---
+        function drawLine(x0, y0, x1, y1, r, g, b) {
+            try {
+                let dx = Math.abs(x1 - x0);
+                let dy = Math.abs(y1 - y0);
+                let sx = x0 < x1 ? 1 : -1;
+                let sy = y0 < y1 ? 1 : -1;
+                let err = dx - dy;
+
+                while (true) {
+                    // 画面外への書き込みを完全に防ぐガード
+                    if (x0 >= 0 && x0 < width && y0 >= 0 && y0 < height) {
+                        let index = (y0 * width + x0) * 4;
+                        if (index >= 0 && index < data.length - 3) {
+                            data[index]     = r;
+                            data[index + 1] = g;
+                            data[index + 2] = b;
+                            data[index + 3] = 255;
+                        }
+                    }
+                    if (x0 === x1 && y0 === y1) break;
+                    let e2 = 2 * err;
+                    if (e2 > -dy) { err -= dy; x0 += sx; }
+                    if (e2 < dx) { err += dx; y0 += sy; }
+                }
+            } catch (e) {
+                // 描画中の個別エラーでメインループを落とさない
+                console.warn("DrawLine warning:", e);
+            }
+        }
+
+        // --- メインループ ＆ トライ・キャッチ保護 ---
+        let lastFrameTime = performance.now();
+        let frameCount = 0;
+        let lastFpsUpdate = performance.now();
+        let currentFps = 60;
+
+        function loop() {
+            try {
+                let now = performance.now();
+                let frameDelta = now - lastFrameTime;
+                lastFrameTime = now;
+
+                // 応答なしフラグ (1.5秒以上の硬直)
+                let isNotRes = frameDelta > 1500;
+
+                // バッファ初期化 (安全な埋め方)
+                if (data && data.fill) {
+                    data.fill(0);
+                }
+
+                let cosX = Math.cos(rotX), sinX = Math.sin(rotX);
+                let cosY = Math.cos(rotY), sinY = Math.sin(rotY);
+
+                let projX = [];
+                let projY = [];
+
+                // 3D演算の数式保護 (ゼロ除算対策含む)
+                for (let i = 0; i < vertices.length; i++) {
+                    let x = vertices[i][0];
+                    let y = vertices[i][1];
+                    let z = vertices[i][2];
+
+                    let x1 = x * cosY - z * sinY;
+                    let z1 = x * sinY + z * cosY;
+                    let y2 = y * cosX - z1 * sinX;
+                    let z2 = y * sinX + z1 * cosX;
+
+                    let finalZ = z2 + cameraZ;
+                    if (Math.abs(finalZ) < 0.001) finalZ = 0.001; // ゼロ除算・極端な接近のガード
+
+                    let scale = 300 / finalZ;
+                    projX[i] = Math.floor(width / 2 + x1 * scale);
+                    projY[i] = Math.floor(height / 2 + y2 * scale);
+                }
+
+                // ワイヤーフレーム描画
+                for (let edge of edges) {
+                    drawLine(projX[edge[0]], projY[edge[0]], projX[edge[1]], projY[edge[1]], 0, 255, 255);
+                }
+
+                if (ctx && imageData) {
+                    ctx.putImageData(imageData, 0, 0);
+                }
+
+                // FPS計測
+                frameCount++;
+                if (now - lastFpsUpdate >= 1000) {
+                    currentFps = frameCount;
+                    frameCount = 0;
+                    lastFpsUpdate = now;
+                }
+
+                updateDashboard(currentFps, isNotRes);
+
+            } catch (loopErr) {
+                // ループ全体で予期せぬ例外が発生しても、コンソールに吐いて処理を継続させる
+                console.error("Runtime loop error recovered:", loopErr);
+            }
+
+            requestAnimationFrame(loop);
+        }
+
+        // --- ダッシュボード更新 (メモリAPI未対応ブラウザの安全対策) ---
+        const responseDot = document.getElementById('responseDot');
+        const fpsNum = document.getElementById('fpsNum');
+        const memoryDot = document.getElementById('memoryDot');
+        const memoryNum = document.getElementById('memoryNum');
+
+        function updateDashboard(fps, isNotRes) {
+            try {
+                responseDot.className = "status-dot";
+                if (isNotRes) {
+                    responseDot.classList.add('red');
+                    fpsNum.innerText = "NOT RESPONDING";
+                } else {
+                    let isLowFps = fps < 20;
+                    responseDot.classList.add(isLowFps ? 'yellow' : 'green');
+                    fpsNum.innerText = `${fps} FPS`;
+                }
+
+                // メモリAPI (performance.memory) が存在しないブラウザ（FirefoxやSafari等）でも落ちないようにガード
+                if (window.performance && performance.memory && performance.memory.jsHeapSizeLimit > 0) {
+                    let used = performance.memory.usedJSHeapSize;
+                    let limit = performance.memory.jsHeapSizeLimit;
+                    let memPct = Math.round((used / limit) * 100);
+
+                    memoryDot.className = "status-dot";
+                    memoryDot.classList.add(memPct > 85 ? 'red' : (memPct > 60 ? 'yellow' : 'green'));
+                    memoryNum.innerText = `${memPct}%`;
+                } else {
+                    memoryDot.className = "status-dot green";
+                    memoryNum.innerText = "N/A"; // 非対応環境のフォールバック
+                }
+            } catch (dashErr) {
+              alert("Updateエラー: "+dashErr.Message);
+                console.warn("Dashboard update warning:", dashErr);
+            }
+        }
+
+        // 実行開始
+        requestAnimationFrame(loop);
+    </script>
+</body>
+</html>
