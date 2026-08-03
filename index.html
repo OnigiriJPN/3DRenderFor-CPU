@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>CPU 3D Renderer - Robust Edition</title>
+    <title>CPU 3D Renderer Tester</title>
     <style>
         body {
             margin: 0;
@@ -62,8 +62,8 @@
 </head>
 <body>
 
-    <div id="errorOverlay">System Error Detected</div>
-    <h1>CPU 3D SOFTWARE RENDERER (ROBUST)</h1>
+    <div id="errorOverlay">システムエラーが検出されました。</div>
+    <h1>CPU 3D SOFTWARE RENDERER テスター</h1>
     <canvas id="renderCanvas" width="640" height="480"></canvas>
 
     <div class="dashboard">
@@ -90,7 +90,7 @@
         if (!ctx) {
             console.error("Critical: Failed to get 2D context.");
             document.getElementById('errorOverlay').style.display = 'block';
-            document.getElementById('errorOverlay').innerText = "2D Context Not Supported";
+            document.getElementById('errorOverlay').innerText = "2D Context がサポートされていません。";
             throw new Error("2D Context initialization failed");
         }
 
