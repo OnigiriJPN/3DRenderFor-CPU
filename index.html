@@ -189,6 +189,7 @@
                 initialPinchDistance = null;
             });
         } catch (err) {
+            alert("イベントエラー: "+err.message);
             console.warn("Non-fatal: Error binding input events:", err);
         }
 
@@ -230,6 +231,7 @@
                 }
             } catch (e) {
                 // 描画中の個別エラーでメインループを落とさない
+                alert("描画エラー: "+e.message);
                 console.warn("DrawLine warning:", e);
             }
         }
@@ -300,6 +302,7 @@
 
             } catch (loopErr) {
                 // ループ全体で予期せぬ例外が発生しても、コンソールに吐いて処理を継続させる
+                alert("ランタイムループエラー: "+loopErr.message);
                 console.error("Runtime loop error recovered:", loopErr);
             }
 
@@ -317,7 +320,7 @@
                 responseDot.className = "status-dot";
                 if (isNotRes) {
                     responseDot.classList.add('red');
-                    fpsNum.innerText = "NOT RESPONDING";
+                    fpsNum.innerText = "応答なし";
                 } else {
                     let isLowFps = fps < 20;
                     responseDot.classList.add(isLowFps ? 'yellow' : 'green');
@@ -338,7 +341,7 @@
                     memoryNum.innerText = "N/A"; // 非対応環境のフォールバック
                 }
             } catch (dashErr) {
-              alert("Updateエラー: "+dashErr.Message);
+              alert("Updateエラー: "+dashErr.message);
                 console.warn("Dashboard update warning:", dashErr);
             }
         }
